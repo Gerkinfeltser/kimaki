@@ -28,3 +28,6 @@ zig-out
 website/.wrangler/
 .wrangler
 betterstack
+
+# semantic-search cache
+.semantic-search/
