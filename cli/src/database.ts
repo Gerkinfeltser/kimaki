@@ -193,10 +193,9 @@ export async function recoverStaleRunningScheduledTasks({ staleBefore }: { stale
   return countRows(rows)
 }
 
-export async function markScheduledTaskOneShotCompleted({ taskId, completedAt }: { taskId: number; completedAt: Date }) {
+export async function deleteScheduledTask(taskId: number) {
   const db = await getDb()
-  await db.update(schema.scheduled_tasks)
-    .set({ status: 'completed', last_run_at: completedAt, running_started_at: null, last_error: null })
+  await db.delete(schema.scheduled_tasks)
     .where(orm.eq(schema.scheduled_tasks.id, taskId))
 }
 
@@ -532,6 +531,30 @@ export async function upsertThreadSession({ threadId, sessionId, source }: { thr
   await db.insert(schema.thread_sessions)
     .values({ thread_id: threadId, session_id: sessionId, source })
     .onConflictDoUpdate({ target: schema.thread_sessions.thread_id, set: { session_id: sessionId, source } })
+}
+
+export async function getThreadParentSessionId(threadId: string) {
+  const db = await getDb()
+  return (
+    await db.query.thread_sessions.findFirst({
+      where: { thread_id: threadId },
+      columns: { parent_session_id: true },
+    })
+  )?.parent_session_id ?? undefined
+}
+
+export async function setThreadParentSessionId({
+  threadId,
+  parentSessionId,
+}: {
+  threadId: string
+  parentSessionId: string
+}) {
+  const db = await getDb()
+  await db
+    .update(schema.thread_sessions)
+    .set({ parent_session_id: parentSessionId })
+    .where(orm.eq(schema.thread_sessions.thread_id, threadId))
 }
 
 export async function getThreadSessionSource(threadId: string) {

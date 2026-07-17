@@ -452,6 +452,16 @@ importers:
         specifier: ^3.0.0
         version: 3.2.6(@types/debug@4.1.13)(@types/node@22.19.21)(jiti@2.7.0)(lightningcss@1.32.0)(tsx@4.22.4)(yaml@2.9.0)
 
+  opencode-kimaki-plugin:
+    dependencies:
+      kimaki:
+        specifier: workspace:^
+        version: link:../cli
+    devDependencies:
+      '@types/node':
+        specifier: ^24.3.0
+        version: 24.13.2
+
   sigillo:
     devDependencies:
       '@types/node':
@@ -8151,7 +8161,7 @@ snapshots:
 
   '@types/proxy-from-env@1.0.4':
     dependencies:
-      '@types/node': 22.19.21
+      '@types/node': 24.13.2
 
   '@types/react-dom@19.2.3(@types/react@19.2.17)':
     dependencies:
