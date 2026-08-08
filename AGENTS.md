@@ -467,6 +467,17 @@ jq -r '[.timestamp, .event.type] | @tsv' ~/.kimaki/opencode-session-events/ses_x
 
 for checkout validation requests, prefer non-recursive checks unless the user asks otherwise.
 
+## product analytics (Strada)
+
+anonymous install-level product events go to Strada via `cli/src/analytics.ts` (`bot_started`, `project_registered`, `session_created`, `turn_started`, `turn_completed`). no Discord IDs, paths, prompts, or secrets. metrics are **active installs**, not people.
+
+- prod project slug: `kimaki`
+- local/dev bot (this repo `cli/.env`): `kimaki-local`
+- disable: `kimaki --no-analytics` or `KIMAKI_STRADA_ENABLED=0`
+- query with `strada` CLI; login as the org owner (t.de Google account)
+
+full event schema, DAU/WAU/MAU, funnels, retention, completion rate, and copy-paste SQL: see `docs/strada-product-analytics.md`.
+
 ## kimaki command shim (`~/.kimaki/bin/kimaki`)
 
 `ensureKimakiCommandShim()` in `cli/src/opencode-command.ts` generates a shell script at `~/.kimaki/bin/kimaki` (or `kimaki.cmd` on Windows) every time the bot starts. it captures `process.execPath`, `process.execArgv`, and `process.argv[1]` into an `exec` one-liner so the shim always mirrors the current process.
@@ -520,7 +531,8 @@ always add `expect(await th.text()).toMatchInlineSnapshot()` (or `discord.channe
 see `docs/e2e-testing-learnings.md` for detailed lessons. key points:
 
 - **always assert on Discord messages (what the user sees), not internal state or logs.** use digital-discord helpers like `th.getMessages()`, `waitForBotReply`, `waitForBotReplyAfterUserMessage`, `waitForBotMessageContaining` to verify actual Discord thread content. never use `getLogEntriesSince` + string matching for test expectations — logs are brittle, can bleed across sequential tests, and don't verify actual behavior. use `getLogEntriesSince` only in `onTestFailed` for diagnostics.
-- e2e tests use `opencode-deterministic-provider` which returns canned responses instantly (no real LLM). poll timeouts should be **4s max** and polling interval **100ms**. the only real latency is opencode server startup (`beforeAll`, 60s is fine) and intentional `partDelaysMs` in matchers.
+- e2e tests use `opencode-deterministic-provider` which returns canned responses instantly (no real LLM). write poll timeouts as **4s** and polling interval **100ms**. the only real latency is opencode server startup (`beforeAll`, 60s is fine) and intentional `partDelaysMs` in matchers.
+- the wait helpers in `test-utils.ts` clamp every timeout into **8s..10s** under vitest. the first turn against a fresh opencode server costs 2-4s (session create, config and agent discovery, provider load, kimaki plugin load), so a literal 4s budget made the first assertion of a file fail randomly. a wait only burns its full budget when the test is already failing, so the floor costs nothing on green runs. tests asserting something never appears must use their own polling loop instead of these helpers.
 - deterministic provider matchers can still trigger **real tool execution** when they emit `tool-call` parts (for example `bash` + `sleep`). do not use long sleeps (`sleep 500` means 500 seconds). prefer `partDelaysMs` for timing windows in tests.
 - avoid broad matchers like only `lastMessageRole: 'tool'` in shared e2e matcher lists. always scope with an explicit marker (`rawPromptIncludes`, exact latest user text, etc.) or they can cascade across unrelated turns and create flaky tests.
 - prefer `latestUserTextIncludes` over `rawPromptIncludes` for deterministic matcher markers that should only trigger once. `rawPromptIncludes` scans full session history, so after abort+retry in the same session the old marker re-fires and causes deadlocks or timeouts. `latestUserTextIncludes` only checks the most recent user message.
