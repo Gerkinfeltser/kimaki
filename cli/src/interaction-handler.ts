@@ -39,7 +39,6 @@ import {
 import { handleCreateNewProjectCommand } from './commands/create-new-project.js'
 import { handlePermissionButton } from './commands/permissions.js'
 import { handleAbortCommand } from './commands/abort.js'
-import { handleAddDirCommand } from './commands/add-dir.js'
 import { handleCompactCommand } from './commands/compact.js'
 import { handleShareCommand } from './commands/share.js'
 import { handleDiffCommand } from './commands/diff.js'
@@ -87,6 +86,7 @@ import { handleActionButton } from './commands/action-buttons.js'
 import { handleHtmlActionButton } from './html-actions.js'
 import {
   handleQueueCommand,
+  handleClearQueueCommand,
   handleQueueCommandCommand,
   handleQueueCommandAutocomplete,
 } from './commands/queue.js'
@@ -107,6 +107,7 @@ import { handleScreenshareCommand } from './commands/screenshare.js'
 import { handleVscodeCommand } from './commands/vscode.js'
 import { handleModelVariantSelectMenu } from './commands/model.js'
 import {
+  handleModelVariantCommand,
   handleVariantQuickSelectMenu,
   handleVariantScopeSelectMenu,
 } from './commands/model-variant.js'
@@ -316,10 +317,6 @@ export function registerInteractionHandler({
               await handleAbortCommand({ command: interaction, appId })
               return
 
-            case 'add-dir':
-              await handleAddDirCommand({ command: interaction, appId })
-              return
-
             case 'compact':
               await handleCompactCommand({ command: interaction, appId })
               return
@@ -348,6 +345,10 @@ export function registerInteractionHandler({
               await handleModelCommand({ interaction, appId })
               return
 
+            case 'model-variant':
+              await handleModelVariantCommand({ interaction, appId })
+              return
+
             case 'login':
               if (!hasKimakiAdminPermission(interaction.member, interaction.guild)) {
                 await interaction.reply({
@@ -365,6 +366,10 @@ export function registerInteractionHandler({
 
             case 'queue':
               await handleQueueCommand({ command: interaction, appId })
+              return
+
+            case 'clear-queue':
+              await handleClearQueueCommand({ command: interaction, appId })
               return
 
             case 'queue-command':
