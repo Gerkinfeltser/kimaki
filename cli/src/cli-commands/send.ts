@@ -111,6 +111,14 @@ cli
     '--send-at <schedule>',
     'Schedule send for future (UTC ISO date/time ending in Z, or cron expression)',
   )
+  .option(
+    '--pre-run <command>',
+    'Run a shell command in the project before starting a scheduled task',
+  )
+  .option(
+    '--allow-concurrency',
+    'Allow concurrent sessions from the same scheduled task',
+  )
   .option('--thread <threadId>', 'Post prompt to an existing thread')
   .option(
     '--session <sessionId>',
@@ -142,6 +150,11 @@ cli
         const sendAt = options.sendAt
 
         const existingThreadMode = Boolean(threadId || sessionId)
+
+        if ((options.preRun || options.allowConcurrency) && !sendAt) {
+          cliLogger.error('--pre-run and --allow-concurrency require --send-at')
+          process.exit(EXIT_NO_RESTART)
+        }
 
         if (threadId && sessionId) {
           cliLogger.error('Use either --thread or --session, not both')
@@ -495,6 +508,8 @@ cli
               permissions: options.permission?.length ? options.permission : null,
               injectionGuardPatterns: options.injectionGuard?.length ? options.injectionGuard : null,
               parentSessionId: options.parentSession || null,
+              preRunCommand: options.preRun || null,
+              allowConcurrency: Boolean(options.allowConcurrency),
             }
             const taskId = await createScheduledTask({
               scheduleKind: parsedSchedule.scheduleKind,
@@ -542,7 +557,7 @@ cli
 
           if (threadTargetUser) {
             cliLogger.log(
-              `Adding user ${threadTargetUser.username} to thread...`,
+              `Adding user ${threadTargetUser.username || threadTargetUser.id} to thread...`,
             )
             const addMemberResult = await ensureThreadMember({
               rest,
@@ -691,6 +706,8 @@ cli
             permissions: options.permission?.length ? options.permission : null,
             injectionGuardPatterns: options.injectionGuard?.length ? options.injectionGuard : null,
             parentSessionId: options.parentSession || null,
+            preRunCommand: options.preRun || null,
+            allowConcurrency: Boolean(options.allowConcurrency),
           }
           const taskId = await createScheduledTask({
             scheduleKind: parsedSchedule.scheduleKind,
@@ -722,8 +739,8 @@ cli
               ...(worktreeName && { worktree: worktreeName }),
               ...(resolvedCwd && { cwd: resolvedCwd }),
               ...(resolvedUser && {
-                username: resolvedUser.username,
                 userId: resolvedUser.id,
+                ...(resolvedUser.username && { username: resolvedUser.username }),
               }),
               ...(options.agent && { agent: options.agent }),
               ...(options.model && { model: options.model }),
@@ -773,7 +790,9 @@ cli
 
         // Add user to thread if specified
         if (resolvedUser) {
-          cliLogger.log(`Adding user ${resolvedUser.username} to thread...`)
+          cliLogger.log(
+            `Adding user ${resolvedUser.username || resolvedUser.id} to thread...`,
+          )
           await rest.put(Routes.threadMembers(threadData.id, resolvedUser.id))
         }
 

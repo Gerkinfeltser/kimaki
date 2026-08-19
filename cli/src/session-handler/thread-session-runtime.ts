@@ -42,7 +42,7 @@ import {
   NOTIFY_MESSAGE_FLAGS,
 } from '../discord-utils.js'
 import type { DiscordFileAttachment } from '../message-formatting.js'
-import { formatPart } from '../message-formatting.js'
+import { formatPart, formatTaskToolTitle } from '../message-formatting.js'
 import {
   getChannelVerbosity,
   getPartMessageIds,
@@ -57,6 +57,9 @@ import {
   clearSessionModel,
   getVariantCascade,
   setSessionStartSource,
+  completeScheduledTaskRunsForSession,
+  failScheduledTaskRunsForSession,
+  startScheduledTaskRunSession,
   appendSessionEventsSinceLastTimestamp,
   getSessionEventSnapshot,
 } from '../database.js'
@@ -99,6 +102,7 @@ import { getDataDir } from '../config.js'
 import {
   trackEvent,
   type AnalyticsIngressMode,
+  type AnalyticsProps,
   type AnalyticsTurnInputKind,
   type AnalyticsTurnSource,
 } from '../analytics.js'
@@ -115,6 +119,7 @@ import {
   getCurrentTurnStartTime,
   isSessionBusy,
   getLatestRunInfo,
+  getIdleTokenUsageDelta,
   getDerivedSubtaskIndex,
   getDerivedSubtaskAgentType,
   getLatestAssistantMessageIdForLatestUserTurn,
@@ -573,7 +578,7 @@ export type IngressInput = {
    * Never set for /btw, /fork, or task/subagent children (keeps system prompt cache).
    */
   parentSessionId?: string
-  sessionStartSource?: { scheduleKind: 'at' | 'cron'; scheduledTaskId?: number }
+  sessionStartSource?: { scheduleKind: 'at' | 'cron'; scheduledTaskId?: number; scheduledTaskRunId?: number }
   /** Optional guard for retries: skip enqueue when session has changed. */
   expectedSessionId?: string
   /**
@@ -604,7 +609,7 @@ export type IngressInput = {
 
 function resolveTurnSource(input: {
   analyticsSource?: AnalyticsTurnSource
-  sessionStartSource?: { scheduleKind: 'at' | 'cron'; scheduledTaskId?: number }
+  sessionStartSource?: { scheduleKind: 'at' | 'cron'; scheduledTaskId?: number; scheduledTaskRunId?: number }
   sessionStartScheduleKind?: 'at' | 'cron'
 }): AnalyticsTurnSource {
   if (input.analyticsSource) return input.analyticsSource
@@ -1440,9 +1445,20 @@ export class ThreadSessionRuntime {
         await this.handlePartUpdated(event.properties.part)
         break
       case 'session.idle':
+        await completeScheduledTaskRunsForSession(event.properties.sessionID)
         await this.handleSessionIdle(event.properties.sessionID)
         break
       case 'session.error':
+        if (event.properties.sessionID) {
+          const sessionError = event.properties.error
+          const errorMessage = sessionError && typeof sessionError === 'object'
+            ? String(sessionError.data?.message || sessionError.name || 'Session failed')
+            : 'Session failed'
+          await failScheduledTaskRunsForSession({
+            sessionId: event.properties.sessionID,
+            error: errorMessage,
+          })
+        }
         await this.handleSessionError(event.properties)
         break
       case 'permission.asked':
@@ -2050,6 +2066,41 @@ export class ThreadSessionRuntime {
       return
     }
 
+    if (
+      part.type === 'tool' &&
+      part.tool === 'task' &&
+      !this.state?.sentPartIds.has(part.id)
+    ) {
+      const taskDisplay = formatTaskToolTitle(part)
+      if (taskDisplay && (await this.getVerbosity()) !== 'text_only') {
+        await this.flushBufferedParts({
+          messageID: part.messageID,
+          force: true,
+          skipPartId: part.id,
+        })
+        threadState.updateThread(this.threadId, (t) => {
+          const newIds = new Set(t.sentPartIds)
+          newIds.add(part.id)
+          return { ...t, sentPartIds: newIds }
+        })
+        const sendResult = await sendThreadMessage(this.thread, taskDisplay + '\n\n')
+          .catch((e) => new DiscordOperationError({ operation: 'sendMessage', cause: e }))
+        if (sendResult instanceof Error) {
+          threadState.updateThread(this.threadId, (t) => {
+            const newIds = new Set(t.sentPartIds)
+            newIds.delete(part.id)
+            return { ...t, sentPartIds: newIds }
+          })
+          discordLogger.error(
+            `ERROR: Failed to send task part ${part.id}:`,
+            sendResult,
+          )
+          return
+        }
+        await setPartMessage({ partId: part.id, messageId: sendResult.id, threadId: this.thread.id })
+      }
+    }
+
     if (part.type === 'tool' && part.state.status === 'running') {
       await this.flushBufferedParts({
         messageID: part.messageID,
@@ -2057,47 +2108,6 @@ export class ThreadSessionRuntime {
         skipPartId: part.id,
       })
       await this.sendPartMessage({ part })
-
-      // Track task tool spawning subtask sessions
-      if (part.tool === 'task' && !this.state?.sentPartIds.has(part.id)) {
-        const description =
-          typeof part.state.input?.description === 'string'
-            ? part.state.input.description
-            : ''
-        const agent =
-          typeof part.state.input?.subagent_type === 'string'
-            ? part.state.input.subagent_type
-            : 'task'
-        const childSessionId =
-          typeof part.state.metadata?.sessionId === 'string'
-            ? part.state.metadata.sessionId
-            : ''
-        if (description && childSessionId) {
-          if ((await this.getVerbosity()) !== 'text_only') {
-            const taskDisplay = `┣ ${agent} **${description}**`
-            threadState.updateThread(this.threadId, (t) => {
-              const newIds = new Set(t.sentPartIds)
-              newIds.add(part.id)
-              return { ...t, sentPartIds: newIds }
-            })
-            const sendResult = await sendThreadMessage(this.thread, taskDisplay + '\n\n')
-              .catch((e) => new DiscordOperationError({ operation: 'sendMessage', cause: e }))
-            if (sendResult instanceof Error) {
-              threadState.updateThread(this.threadId, (t) => {
-                const newIds = new Set(t.sentPartIds)
-                newIds.delete(part.id)
-                return { ...t, sentPartIds: newIds }
-              })
-              discordLogger.error(
-                `ERROR: Failed to send task part ${part.id}:`,
-                sendResult,
-              )
-              return
-            }
-            await setPartMessage({ partId: part.id, messageId: sendResult.id, threadId: this.thread.id })
-          }
-        }
-      }
       return
     }
 
@@ -2291,7 +2301,50 @@ export class ThreadSessionRuntime {
     this.requestTypingRepulse()
   }
 
+  private trackIdleTokenUsage(idleSessionId: string): void {
+    let idleEventIndex: number | undefined
+    for (let i = this.eventBuffer.length - 1; i >= 0; i--) {
+      const event = this.eventBuffer[i]?.event
+      if (event?.type === 'session.idle' && event.properties.sessionID === idleSessionId) {
+        idleEventIndex = i
+        break
+      }
+    }
+    if (idleEventIndex === undefined) {
+      return
+    }
+    const usage = getIdleTokenUsageDelta({
+      events: this.eventBuffer,
+      sessionId: idleSessionId,
+      idleEventIndex,
+    })
+    if (!usage) {
+      return
+    }
+
+    const properties: AnalyticsProps = {
+      tokens_input: usage.input,
+      tokens_output: usage.output,
+      tokens_reasoning: usage.reasoning,
+      tokens_cache_read: usage.cacheRead,
+      tokens_cache_write: usage.cacheWrite,
+      tokens_total: usage.total,
+      cost: usage.cost,
+      assistant_message_count: usage.assistantMessageCount,
+      is_subagent: Boolean(this.getSubtaskInfoForSession(idleSessionId)),
+    }
+    if (usage.model) {
+      properties.model = usage.model
+    }
+    if (usage.providerID) {
+      properties.provider = usage.providerID
+    }
+    trackEvent('tokens_used', properties)
+  }
+
   private async handleSessionIdle(idleSessionId: string): Promise<void> {
+    this.trackIdleTokenUsage(idleSessionId)
+
     const sessionId = this.state?.sessionId
 
     // ── Subtask idle ──────────────────────────────────────────
@@ -3177,6 +3230,14 @@ export class ThreadSessionRuntime {
         void notifyError(errObj, 'promptAsync failed in submitViaOpencodeQueue')
         await cleanupOnError(`✗ OpenCode API error: ${errorMessage}`)
         return
+      }
+
+      if (input.sessionStartSource?.scheduledTaskRunId) {
+        await startScheduledTaskRunSession({
+          runId: input.sessionStartSource.scheduledTaskRunId,
+          sessionId: session.id,
+          projectDirectory: this.sdkDirectory,
+        })
       }
 
       logger.log(

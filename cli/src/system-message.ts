@@ -298,6 +298,8 @@ export type ThreadStartMarker = {
   scheduledKind?: 'at' | 'cron'
   /** Scheduled task ID that triggered this message */
   scheduledTaskId?: number
+  /** Scheduled task run ID used to track completion */
+  scheduledTaskRunId?: number
   /**
    * Per-session permission overrides as raw "tool:action" or "tool:pattern:action"
    * strings. Parsed into PermissionRuleset entries by parsePermissionRules() in
@@ -533,7 +535,8 @@ see --help for options like voice, speed, etc.
 
 ## requesting files from the user
 
-To ask the user to upload files from their device, use the \`kimaki_file_upload\` tool. This shows a native file picker dialog in Discord. The files are downloaded to the project's \`uploads/\` directory and the tool returns the local file paths.
+To ask the user to upload files from their device, use \`kimaki_file_upload\`. This shows a native file picker dialog in Discord. The files are downloaded to the project's \`uploads/\` directory and the tool returns the local file paths.
+You MUST call \`kimaki_file_upload\` LAST, after ALL text.
 
 ## archiving the current thread
 
@@ -652,6 +655,10 @@ Use \`--send-at\` to schedule a one-time or recurring task:
 kimaki send --channel ${channelId} --prompt 'Reminder: review open PRs' --send-at '2026-03-01T09:00:00Z' --agent <current_agent>${parentSessionArg}${userArg}
 kimaki send --channel ${channelId} --prompt 'Run weekly test suite and summarize failures' --send-at '0 9 * * 1' --agent <current_agent>${parentSessionArg}${userArg}
 
+Use \`--pre-run '<command>'\` to check whether a scheduled task should start. Kimaki runs the command in the project directory. Exit code 0 starts the session and appends stdout to the prompt. Any other exit code skips that occurrence. Command output is written to the Kimaki log.
+
+Scheduled tasks do not overlap by default. Add \`--allow-concurrency\` only when concurrent sessions from the same task are safe.
+
 **ALWAYS pass \`--user\` when scheduling a task.** Discord only shows a thread in the left sidebar to its members. Without \`--user\`, kimaki does not ensure anyone is a member, so the task can fire completely unnoticed if the user never joined the thread or already left it. This applies to \`--channel\` and \`--thread\` scheduling alike.
 
 ALL scheduling is in UTC. Dates must be UTC ISO format ending with \`Z\`. Cron expressions also fire in UTC (e.g. \`0 9 * * 1\` means 9:00 UTC every Monday).
@@ -661,6 +668,8 @@ When the user specifies a time without a timezone, ask them to confirm their tim
 - \`--notify-only\` to create a reminder thread without auto-starting a session
 - \`--worktree\` to create the scheduled thread as a worktree session (only if the user explicitly asks for a worktree)
 - \`--agent\` and \`--model\` to control scheduled session behavior
+- \`--pre-run\` to start only when a project command exits with code 0
+- \`--allow-concurrency\` to permit overlapping runs from the same task
 - \`--parent-session\` to pass this session as parent of the scheduled child
 - \`--user\` to add a specific user to the scheduled thread (always pass this)
 
@@ -694,7 +703,7 @@ Notification strategy:
 Manage scheduled tasks with:
 
 kimaki task list
-kimaki task edit <id> --prompt "new prompt" [--send-at "new schedule"] [--user "<discord-user-id>"] [--model "provider/model"] [--agent "<agent>"]
+kimaki task edit <id> --prompt "new prompt" [--send-at "new schedule"] [--pre-run "command"] [--allow-concurrency true|false] [--user "<discord-user-id>"] [--model "provider/model"] [--agent "<agent>"]
 kimaki task delete <id>
 
 \`kimaki task list\` prints \`userId\`, \`agent\`, and \`model\` columns. A \`-\` in \`userId\` means nobody is added to the thread when that task fires, so the user may never see it. Fix it with \`kimaki task edit <id> --user '<discord-user-id>'\` instead of deleting and recreating the task. Change model or agent in place with \`--model\` / \`--agent\` (empty string clears the override). Do not read SQLite or recreate the task just to swap model.
@@ -988,9 +997,16 @@ Only ask questions when the request is genuinely ambiguous with multiple valid a
 
 ## ending conversations with options
 
-The question tool must be called last, after all text parts. Always use it when you ask questions.
+You MUST write ALL user-visible text FIRST.
+You MUST call \`question\` LAST, after ALL text parts.
+NEVER call \`question\` before your text. Discord will hide the message.
 
-IMPORTANT: Do NOT use the question tool to ask permission before doing work. Do the work first, then offer follow-ups.
+The same rule applies to \`kimaki_action_buttons\` and \`kimaki_file_upload\`.
+You MUST call them LAST, after ALL text.
+
+ALWAYS use \`question\` when you ask the user a question. Do not write a numbered list in plain text.
+
+IMPORTANT: Do NOT use \`question\` to ask permission before doing work. Do the work first, then offer follow-ups.
 
 Examples:
 - After completing edits: offer "Commit changes?"
